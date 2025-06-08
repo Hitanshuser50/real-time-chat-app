@@ -31,7 +31,7 @@ A real-time chat application powered by local LLM using Ollama, with Socket.IO f
 
 1. **Clone the repository:**
    ```bash
-   git clone <your-repository-url>
+   git clone https://github.com/Hitanshuser50/real-time-chat-app
    cd real-time-chat-app
    ```
 

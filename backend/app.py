@@ -1,172 +1,210 @@
-import os
-import time
-import requests
-import threading
 from flask import Flask, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
-from flask_cors import CORS
-import json
+import requests
+import time
+import os
+import logging
+from datetime import datetime
+import threading
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-here'
-CORS(app, resources={r"/*": {"origins": "*"}})
+app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
 
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# Initialize SocketIO with CORS enabled
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Configuration
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
 MODEL_NAME = 'llama3.2:1b'  # Using smaller model for better performance
 
-# Store active users and chat history
+# In-memory storage (use Redis for production)
 active_users = {}
 chat_history = []
+MAX_HISTORY = 100
 
-class OllamaClient:
-    def __init__(self, base_url):
-        self.base_url = base_url
-        self.model_loaded = False
-        
-    def wait_for_ollama(self, max_retries=30):
-        """Wait for Ollama service to be ready"""
-        for i in range(max_retries):
-            try:
-                response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-                if response.status_code == 200:
-                    print("Ollama service is ready!")
-                    return True
-            except requests.exceptions.RequestException:
-                print(f"Waiting for Ollama service... ({i+1}/{max_retries})")
-                time.sleep(2)
+def check_ollama_health():
+    """Check if Ollama service is available"""
+    try:
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        return response.status_code == 200
+    except Exception as e:
+        logger.error(f"Ollama health check failed: {e}")
         return False
-    
-    def ensure_model_loaded(self):
-        """Pull the model if not already available"""
-        if self.model_loaded:
-            return True
-            
-        try:
-            # Check if model exists
-            response = requests.get(f"{self.base_url}/api/tags")
-            models = response.json()
-            
-            model_exists = any(MODEL_NAME in model['name'] for model in models.get('models', []))
+
+def pull_model_if_needed():
+    """Pull the model if it's not available"""
+    try:
+        # Check if model exists
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
+        if response.status_code == 200:
+            models = response.json().get('models', [])
+            model_exists = any(MODEL_NAME in model.get('name', '') for model in models)
             
             if not model_exists:
-                print(f"Pulling model {MODEL_NAME}...")
+                logger.info(f"Pulling model {MODEL_NAME}...")
                 pull_response = requests.post(
-                    f"{self.base_url}/api/pull",
+                    f"{OLLAMA_URL}/api/pull",
                     json={"name": MODEL_NAME},
-                    stream=True,
-                    timeout=300
+                    timeout=300  # 5 minutes timeout for model pull
                 )
-                
-                for line in pull_response.iter_lines():
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            if data.get('status') == 'success':
-                                print(f"Model {MODEL_NAME} pulled successfully!")
-                                break
-                        except json.JSONDecodeError:
-                            continue
-            
-            self.model_loaded = True
-            return True
-            
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            return False
-    
-    def generate_response(self, prompt, context=""):
-        """Generate response from Ollama"""
-        try:
-            full_prompt = f"{context}\nUser: {prompt}\nAssistant:"
-            
-            response = requests.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": MODEL_NAME,
-                    "prompt": full_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.7,
-                        "top_p": 0.9,
-                        "max_tokens": 512
-                    }
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get('response', 'Sorry, I could not generate a response.')
+                if pull_response.status_code == 200:
+                    logger.info(f"Successfully pulled model {MODEL_NAME}")
+                else:
+                    logger.error(f"Failed to pull model: {pull_response.text}")
             else:
-                return f"Error: {response.status_code} - {response.text}"
+                logger.info(f"Model {MODEL_NAME} already available")
                 
-        except Exception as e:
-            return f"Error generating response: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error checking/pulling model: {e}")
 
-# Initialize Ollama client
-ollama_client = OllamaClient(OLLAMA_URL)
-
-def initialize_ollama():
-    """Initialize Ollama in a separate thread"""
-    print("Initializing Ollama...")
-    if ollama_client.wait_for_ollama():
-        if ollama_client.ensure_model_loaded():
-            print("Ollama initialization complete!")
+def get_ai_response(message, context=""):
+    """Get response from Ollama AI"""
+    try:
+        if not check_ollama_health():
+            return "❌ AI service is currently unavailable. Please try again later."
+        
+        # Prepare the prompt
+        prompt = f"Context: {context}\nUser: {message}\nAssistant:"
+        
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "max_tokens": 150
+                }
+            },
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('response', 'No response generated')
         else:
-            print("Failed to load model!")
-    else:
-        print("Failed to connect to Ollama service!")
+            logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+            return "❌ Sorry, I couldn't process your request right now."
+            
+    except requests.exceptions.Timeout:
+        return "⏱️ Request timed out. The AI is thinking too hard!"
+    except Exception as e:
+        logger.error(f"AI response error: {e}")
+        return "❌ Something went wrong while getting AI response."
 
-# Start Ollama initialization in background
-threading.Thread(target=initialize_ollama, daemon=True).start()
+@app.route('/health')
+def health_check():
+    """Health check endpoint"""
+    ollama_status = check_ollama_health()
+    return {
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'ollama_available': ollama_status,
+        'active_users': len(active_users),
+        'chat_history_size': len(chat_history)
+    }, 200
+
+@app.route('/')
+def index():
+    """Basic index endpoint"""
+    return {
+        'message': 'Chat Backend API',
+        'endpoints': ['/health'],
+        'socketio': 'enabled'
+    }
 
 @socketio.on('connect')
 def handle_connect():
-    print(f'Client connected: {request.sid}')
-    # Send chat history to new user
-    emit('chat_history', chat_history)
+    """Handle client connection"""
+    logger.info(f"Client connected: {request.sid}")
+    emit('connect_response', {'status': 'connected'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print(f'Client disconnected: {request.sid}')
+    """Handle client disconnection"""
+    logger.info(f"Client disconnected: {request.sid}")
+    
     # Remove user from active users
-    if request.sid in active_users:
-        username = active_users[request.sid]['username']
-        del active_users[request.sid]
-        emit('user_left', {'username': username}, broadcast=True)
-        emit('active_users', list(set(user['username'] for user in active_users.values())), broadcast=True)
+    username = active_users.pop(request.sid, None)
+    if username:
+        # Notify other users
+        socketio.emit('active_users', list(set(active_users.values())))
+        
+        # Add system message
+        system_message = {
+            'username': 'System',
+            'message': f'{username} left the chat',
+            'timestamp': time.time(),
+            'type': 'system'
+        }
+        chat_history.append(system_message)
+        
+        # Keep history manageable
+        if len(chat_history) > MAX_HISTORY:
+            chat_history.pop(0)
+        
+        socketio.emit('new_message', system_message)
 
 @socketio.on('join_chat')
 def handle_join_chat(data):
-    username = data['username']
-    active_users[request.sid] = {
-        'username': username,
-        'joined_at': time.time()
-    }
+    """Handle user joining chat"""
+    username = data.get('username', '').strip()
     
-    join_message = {
+    if not username:
+        emit('error', {'message': 'Username is required'})
+        return
+    
+    # Check if username is already taken
+    if username in active_users.values():
+        emit('error', {'message': 'Username already taken'})
+        return
+    
+    # Add user to active users
+    active_users[request.sid] = username
+    
+    logger.info(f"User {username} joined chat")
+    
+    # Send chat history to new user
+    emit('chat_history', chat_history)
+    
+    # Send updated active users list to all clients
+    socketio.emit('active_users', list(set(active_users.values())))
+    
+    # Add system message
+    system_message = {
         'username': 'System',
         'message': f'{username} joined the chat',
         'timestamp': time.time(),
         'type': 'system'
     }
+    chat_history.append(system_message)
     
-    chat_history.append(join_message)
-    emit('new_message', join_message, broadcast=True)
-    emit('active_users', list(set(user['username'] for user in active_users.values())), broadcast=True)
+    # Keep history manageable
+    if len(chat_history) > MAX_HISTORY:
+        chat_history.pop(0)
+    
+    # Broadcast system message to all clients
+    socketio.emit('new_message', system_message)
 
 @socketio.on('send_message')
-def handle_message(data):
-    if request.sid not in active_users:
+def handle_send_message(data):
+    """Handle message sending"""
+    username = active_users.get(request.sid)
+    if not username:
+        emit('error', {'message': 'Not logged in'})
         return
     
-    username = active_users[request.sid]['username']
-    message = data['message']
+    message = data.get('message', '').strip()
+    if not message:
+        return
     
-    # Store user message
+    # Create message object
     user_message = {
         'username': username,
         'message': message,
@@ -174,26 +212,26 @@ def handle_message(data):
         'type': 'user'
     }
     
+    # Add to history
     chat_history.append(user_message)
-    emit('new_message', user_message, broadcast=True)
     
-    # Check if message is directed to AI (starts with @ai or @bot)
-    if message.lower().startswith('@ai ') or message.lower().startswith('@bot '):
-        # Extract the actual question
-        ai_prompt = message[4:].strip()  # Remove @ai or @bot prefix
-        
-        # Generate context from recent chat history
-        context = "\n".join([
-            f"{msg['username']}: {msg['message']}" 
-            for msg in chat_history[-10:] 
-            if msg['type'] == 'user'
-        ])
-        
-        # Generate AI response in a separate thread to avoid blocking
-        def generate_ai_response():
+    # Broadcast message to all clients
+    socketio.emit('new_message', user_message)
+    
+    # Check if it's an AI request
+    if message.lower().startswith(('@ai', '@bot')) or 'ai' in message.lower():
+        # Process AI request in background thread
+        def process_ai_request():
             try:
-                ai_response = ollama_client.generate_response(ai_prompt, context)
+                # Get recent context (last 5 messages)
+                context_messages = chat_history[-5:-1] if len(chat_history) > 1 else []
+                context = "\n".join([f"{msg['username']}: {msg['message']}" 
+                                   for msg in context_messages if msg['type'] != 'system'])
                 
+                # Get AI response
+                ai_response = get_ai_response(message, context)
+                
+                # Create AI message
                 ai_message = {
                     'username': 'AI Assistant',
                     'message': ai_response,
@@ -201,29 +239,45 @@ def handle_message(data):
                     'type': 'ai'
                 }
                 
+                # Add to history
                 chat_history.append(ai_message)
+                
+                # Keep history manageable
+                if len(chat_history) > MAX_HISTORY:
+                    chat_history.pop(0)
+                
+                # Broadcast AI response
                 socketio.emit('new_message', ai_message)
                 
             except Exception as e:
+                logger.error(f"AI processing error: {e}")
                 error_message = {
                     'username': 'System',
-                    'message': f'AI Error: {str(e)}',
+                    'message': 'Sorry, the AI assistant encountered an error.',
                     'timestamp': time.time(),
                     'type': 'error'
                 }
                 socketio.emit('new_message', error_message)
         
-        threading.Thread(target=generate_ai_response, daemon=True).start()
+        # Start AI processing in background
+        threading.Thread(target=process_ai_request, daemon=True).start()
+    
+    # Keep history manageable
+    if len(chat_history) > MAX_HISTORY:
+        chat_history.pop(0)
 
 @socketio.on('get_active_users')
 def handle_get_active_users():
-    emit('active_users', list(set(user['username'] for user in active_users.values())))
-
-@app.route('/health')
-def health_check():
-    return {'status': 'healthy', 'ollama_url': OLLAMA_URL}
+    """Handle request for active users"""
+    emit('active_users', list(set(active_users.values())))
 
 if __name__ == '__main__':
-    print(f"Starting chat server on port 5000...")
-    print(f"Ollama URL: {OLLAMA_URL}")
+    logger.info("Starting Chat Backend...")
+    logger.info(f"Ollama URL: {OLLAMA_URL}")
+    logger.info(f"Model: {MODEL_NAME}")
+    
+    # Check Ollama and pull model in background
+    threading.Thread(target=pull_model_if_needed, daemon=True).start()
+    
+    # Run the application
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)

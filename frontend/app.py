@@ -17,8 +17,13 @@ st.set_page_config(
 
 # Configuration
 BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:5000')
+<<<<<<< HEAD
+RECONNECT_ATTEMPTS = 3
+MESSAGE_REFRESH_INTERVAL = 5
+=======
 RECONNECT_ATTEMPTS = 5
 MESSAGE_REFRESH_INTERVAL = 2
+>>>>>>> origin/master
 
 # Global queue to handle cross-thread communication
 if 'global_message_queue' not in st.session_state:
@@ -36,9 +41,13 @@ def init_session_state():
         'last_message_id': 0,
         'connection_error': None,
         'auto_reconnect': True,
+<<<<<<< HEAD
+        'message_sending': False
+=======
         'message_sending': False,
         'reconnect_attempts': 0,
         'last_reconnect': 0
+>>>>>>> origin/master
     }
     
     for key, value in defaults.items():
@@ -52,12 +61,19 @@ class EnhancedChatClient:
         self.sio = socketio.Client(
             reconnection=True,
             reconnection_attempts=RECONNECT_ATTEMPTS,
+<<<<<<< HEAD
+            reconnection_delay=2,
+            reconnection_delay_max=10
+        )
+        self.message_queue = message_queue  # Pass queue as parameter
+=======
             reconnection_delay=1,
             reconnection_delay_max=5,
             logger=True,
             engineio_logger=True
         )
         self.message_queue = message_queue
+>>>>>>> origin/master
         self.setup_events()
         self.last_heartbeat = time.time()
     
@@ -71,8 +87,11 @@ class EnhancedChatClient:
                 'error': None,
                 'message': '✅ Connected to chat server'
             }))
+<<<<<<< HEAD
+=======
             # Reset reconnect attempts on successful connection
             st.session_state.reconnect_attempts = 0
+>>>>>>> origin/master
         
         @self.sio.event
         def disconnect():
@@ -82,6 +101,17 @@ class EnhancedChatClient:
                 'error': None,
                 'message': '❌ Disconnected from chat server'
             }))
+<<<<<<< HEAD
+        
+        @self.sio.event
+        def connect_error(data):
+            self.message_queue.put(('connection_status', {
+                'connected': False,
+                'status': 'error',
+                'error': str(data),
+                'message': f'❌ Connection error: {data}'
+            }))
+=======
             # Attempt to reconnect if auto_reconnect is enabled
             if st.session_state.auto_reconnect:
                 current_time = time.time()
@@ -102,6 +132,7 @@ class EnhancedChatClient:
             }))
             # Log the error for debugging
             print(f"Connection error: {error_msg}")
+>>>>>>> origin/master
         
         @self.sio.event
         def reconnect():

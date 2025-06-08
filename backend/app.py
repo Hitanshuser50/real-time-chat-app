@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
 
+<<<<<<< HEAD
+# Initialize SocketIO with CORS enabled
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Configuration
+OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
+MODEL_NAME = os.getenv('MODEL_NAME', 'llama3.2:1b')  # Using smaller model for better performance
+
+# In-memory storage (use Redis/Database for production)
+active_users = {}
+chat_history = []
+MAX_HISTORY = 100
+=======
 # Initialize SocketIO with CORS enabled and better error handling
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
@@ -33,6 +46,7 @@ chat_history = []
 MAX_HISTORY = 100
 last_cleanup = time.time()
 CLEANUP_INTERVAL = 300  # 5 minutes
+>>>>>>> origin/master
 
 def check_ollama_health():
     """Check if Ollama service is available"""
@@ -177,6 +191,28 @@ def index():
 
 @socketio.on('connect')
 def handle_connect():
+<<<<<<< HEAD
+    """Handle client connection"""
+    logger.info(f"Client connected: {request.sid}")
+    emit('connect_response', {
+        'status': 'connected',
+        'sid': request.sid,
+        'ai_available': check_ollama_health()
+    })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    logger.info(f"Client disconnected: {request.sid}")
+    
+    # Remove user from active users
+    username = active_users.pop(request.sid, None)
+    if username:
+        logger.info(f"User {username} left the chat")
+        
+        # Notify other users about updated user list
+        socketio.emit('active_users', list(set(active_users.values())))
+=======
     """Enhanced connection handling"""
     try:
         logger.info(f"Client connected: {request.sid}")
@@ -272,11 +308,16 @@ def handle_join_chat(data):
         
         # Send updated active users list to all clients
         socketio.emit('active_users', list(set(u.get('username') for u in active_users.values() if u.get('username'))))
+>>>>>>> origin/master
         
         # Add system message
         system_message = {
             'username': 'System',
+<<<<<<< HEAD
+            'message': f'👋 {username} left the chat',
+=======
             'message': f'🎉 {username} joined the chat',
+>>>>>>> origin/master
             'timestamp': time.time(),
             'type': 'system'
         }
@@ -286,6 +327,57 @@ def handle_join_chat(data):
         if len(chat_history) > MAX_HISTORY:
             chat_history.pop(0)
         
+<<<<<<< HEAD
+        socketio.emit('new_message', system_message)
+
+@socketio.on('join_chat')
+def handle_join_chat(data):
+    """Handle user joining chat with validation"""
+    username = data.get('username', '').strip()
+    
+    if not username:
+        emit('error', {'message': 'Username is required'})
+        return
+    
+    if len(username) > 50:
+        emit('error', {'message': 'Username too long (max 50 characters)'})
+        return
+    
+    # Check if username is already taken
+    if username in active_users.values():
+        emit('error', {'message': 'Username already taken'})
+        return
+    
+    # Add user to active users
+    active_users[request.sid] = username
+    
+    logger.info(f"User {username} joined chat (SID: {request.sid})")
+    
+    # Send chat history to new user
+    emit('chat_history', chat_history)
+    
+    # Send updated active users list to all clients
+    socketio.emit('active_users', list(set(active_users.values())))
+    
+    # Add system message
+    system_message = {
+        'username': 'System',
+        'message': f'🎉 {username} joined the chat',
+        'timestamp': time.time(),
+        'type': 'system'
+    }
+    chat_history.append(system_message)
+    
+    # Keep history manageable
+    if len(chat_history) > MAX_HISTORY:
+        chat_history.pop(0)
+    
+    # Broadcast system message to all clients
+    socketio.emit('new_message', system_message)
+    
+    # Send success confirmation to the joining user
+    emit('join_success', {'username': username})
+=======
         # Broadcast system message to all clients
         socketio.emit('new_message', system_message)
         
@@ -295,6 +387,7 @@ def handle_join_chat(data):
     except Exception as e:
         logger.error(f"Error in handle_join_chat: {e}")
         emit('error', {'message': 'An error occurred while joining the chat'})
+>>>>>>> origin/master
 
 @socketio.on('send_message')
 def handle_send_message(data):
@@ -466,6 +559,8 @@ def internal_error(error):
     logger.error(f"Internal server error: {error}")
     return {'error': 'Internal server error'}, 500
 
+<<<<<<< HEAD
+=======
 def cleanup_inactive_users():
     """Clean up inactive users and old messages"""
     global last_cleanup
@@ -490,6 +585,7 @@ def cleanup_inactive_users():
         
         last_cleanup = current_time
 
+>>>>>>> origin/master
 if __name__ == '__main__':
     logger.info("🚀 Starting Enhanced Chat Backend...")
     logger.info(f"📡 Ollama URL: {OLLAMA_URL}")

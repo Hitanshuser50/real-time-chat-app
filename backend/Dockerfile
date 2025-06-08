@@ -7,8 +7,16 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+<<<<<<< HEAD
 # Copy requirements first for better caching
 COPY requirements.txt .
+=======
+# Create non-root user
+RUN useradd -m -u 1000 appuser
+
+# Copy requirements first for better caching
+COPY ../requirements.txt .
+>>>>>>> origin/master
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -16,6 +24,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app.py .
 
+<<<<<<< HEAD
+=======
+# Set proper permissions
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+>>>>>>> origin/master
 # Expose port
 EXPOSE 5000
 

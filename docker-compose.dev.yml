@@ -22,7 +22,11 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+<<<<<<< HEAD
     container_name: ollama
+=======
+    container_name: ollama-dev
+>>>>>>> origin/master
     ports:
       - "11434:11434"
     volumes:
@@ -46,18 +50,36 @@ services:
 
   chat-backend:
     build:
+<<<<<<< HEAD
       context: ./backend
       dockerfile: Dockerfile
     container_name: chat-backend
+=======
+      context: .
+      dockerfile: backend/Dockerfile.dev
+    container_name: chat-backend-dev
+>>>>>>> origin/master
     ports:
       - "5000:5000"
     environment:
       - OLLAMA_URL=http://ollama:11434
+<<<<<<< HEAD
       - FLASK_ENV=production
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
       - MAX_MESSAGE_LENGTH=500
       - RATE_LIMIT_MESSAGES=10
       - RATE_LIMIT_WINDOW=60
+=======
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key}
+      - MODEL_NAME=llama2
+      - MAX_MESSAGE_LENGTH=500
+      - RATE_LIMIT_MESSAGES=10
+      - RATE_LIMIT_WINDOW=60
+    volumes:
+      - ./backend:/app
+>>>>>>> origin/master
     depends_on:
       ollama:
         condition: service_healthy
@@ -77,9 +99,15 @@ services:
 
   streamlit-frontend:
     build:
+<<<<<<< HEAD
       context: ./frontend
       dockerfile: Dockerfile
     container_name: streamlit-frontend
+=======
+      context: .
+      dockerfile: frontend/Dockerfile.dev
+    container_name: streamlit-frontend-dev
+>>>>>>> origin/master
     ports:
       - "8501:8501"
     environment:
@@ -87,6 +115,15 @@ services:
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_SERVER_ENABLE_CORS=false
       - STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false
+<<<<<<< HEAD
+=======
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
+      - STREAMLIT_SERVER_RUN_ON_SAVE=true
+    volumes:
+      - ./frontend:/app
+>>>>>>> origin/master
     depends_on:
       chat-backend:
         condition: service_healthy
@@ -110,4 +147,8 @@ volumes:
 
 networks:
   default:
+<<<<<<< HEAD
     name: chat-network
+=======
+    name: chat-network-dev
+>>>>>>> origin/master

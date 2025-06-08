@@ -1,6 +1,10 @@
 # Makefile for Real-time Chat Application
 
+<<<<<<< HEAD
 .PHONY: help build start stop restart logs clean test dev status health
+=======
+.PHONY: help build start stop restart logs clean test dev status health codespace-setup codespace-start codespace-stop
+>>>>>>> origin/master
 
 # Default target
 help:
@@ -19,6 +23,14 @@ help:
 	@echo "  make status    - Show status of all services"
 	@echo "  make health    - Check health of all services"
 	@echo ""
+<<<<<<< HEAD
+=======
+	@echo "GitHub Codespaces commands:"
+	@echo "  make codespace-setup  - Setup environment for Codespaces"
+	@echo "  make codespace-start  - Start services in Codespaces"
+	@echo "  make codespace-stop   - Stop services in Codespaces"
+	@echo ""
+>>>>>>> origin/master
 	@echo "Service-specific commands:"
 	@echo "  make logs-ollama    - Show Ollama logs"
 	@echo "  make logs-backend   - Show backend logs"
@@ -92,6 +104,30 @@ health:
 	@echo "Checking Frontend..."
 	@curl -f http://localhost:8501 > /dev/null 2>&1 && echo "✅ Frontend: Healthy" || echo "❌ Frontend: Unhealthy"
 
+<<<<<<< HEAD
+=======
+# GitHub Codespaces specific commands
+codespace-setup:
+	@echo "🔧 Setting up GitHub Codespaces environment..."
+	@chmod +x start.sh
+	@pip install -r backend/requirements.txt
+	@pip install -r frontend/requirements.txt
+	@echo "✅ Codespaces setup completed"
+
+codespace-start:
+	@echo "🚀 Starting services in GitHub Codespaces..."
+	@docker-compose -f docker-compose.dev.yml up --build -d
+	@echo "✅ Services started in Codespaces!"
+	@echo "Frontend: http://localhost:8501"
+	@echo "Backend: http://localhost:5000"
+	@echo "Ollama: http://localhost:11434"
+
+codespace-stop:
+	@echo "🛑 Stopping services in GitHub Codespaces..."
+	@docker-compose -f docker-compose.dev.yml down
+	@echo "✅ Services stopped in Codespaces"
+
+>>>>>>> origin/master
 # Setup development environment
 setup-dev:
 	@echo "🔧 Setting up development environment..."

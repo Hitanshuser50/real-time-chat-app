@@ -9,6 +9,12 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
   chat-backend:
     build:
@@ -21,8 +27,14 @@ services:
       - OLLAMA_URL=http://ollama:11434
       - FLASK_ENV=production
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   streamlit-frontend:
     build:
@@ -34,7 +46,8 @@ services:
     environment:
       - BACKEND_URL=http://chat-backend:5000
     depends_on:
-      - chat-backend
+      chat-backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

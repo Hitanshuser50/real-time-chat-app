@@ -1,0 +1,16 @@
+# Backend Dependencies
+python-socketio>=5.10.0
+eventlet>=0.33.3
+flask-cors>=4.0.0
+flask>=3.0.0
+flask-socketio>=5.3.6
+gunicorn>=21.2.0
+
+# Frontend Dependencies
+streamlit>=1.31.0
+streamlit-chat>=0.1.1
+extra-streamlit-components>=0.1.63
+
+# Common Dependencies
+requests>=2.31.0
+python-dotenv>=1.0.0 

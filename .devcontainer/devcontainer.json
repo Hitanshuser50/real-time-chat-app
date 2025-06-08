@@ -1,6 +1,9 @@
 {
     "name": "Real-time Chat App",
-    "dockerComposeFile": "../docker-compose.dev.yml",
+    "dockerComposeFile": [
+        "../docker-compose.dev.yml",
+        "docker-compose.extend.yml"
+    ],
     "service": "streamlit-frontend",
     "workspaceFolder": "/workspace",
     "customizations": {
@@ -9,10 +12,24 @@
                 "ms-python.python",
                 "ms-python.vscode-pylance",
                 "ms-azuretools.vscode-docker"
-            ]
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "python.linting.enabled": true,
+                "python.linting.pylintEnabled": true,
+                "python.formatting.provider": "black"
+            }
         }
     },
-    "forwardPorts": [8501, 5000],
+    "forwardPorts": [8501, 5000, 6379],
     "postCreateCommand": "pip install -r requirements.txt",
-    "remoteUser": "streamlit"
+    "remoteUser": "streamlit",
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "configureZshAsDefaultShell": true,
+            "installOhMyZsh": true,
+            "upgradePackages": true
+        }
+    }
 } 

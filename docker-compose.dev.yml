@@ -1,154 +1,74 @@
 version: '3.8'
 
 services:
-  # Optional: Uncomment this if you want automatic model downloading
-  # ollama-init:
-  #   image: ollama/ollama:latest
-  #   container_name: ollama-init
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   environment:
-  #     - OLLAMA_HOST=http://ollama:11434
-  #   command: >
-  #     sh -c "
-  #       echo 'Waiting for Ollama server...' &&
-  #       sleep 10 &&
-  #       ollama pull llama3.2:1b
-  #     "
-  #   depends_on:
-  #     ollama:
-  #       condition: service_healthy
-  #   restart: "no"
-
-  ollama:
-    image: ollama/ollama:latest
-<<<<<<< HEAD
-    container_name: ollama
-=======
-    container_name: ollama-dev
->>>>>>> origin/master
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 2G
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-
   chat-backend:
     build:
-<<<<<<< HEAD
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: chat-backend
-=======
       context: .
       dockerfile: backend/Dockerfile.dev
     container_name: chat-backend-dev
->>>>>>> origin/master
     ports:
       - "5000:5000"
     environment:
-      - OLLAMA_URL=http://ollama:11434
-<<<<<<< HEAD
-      - FLASK_ENV=production
-      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
-      - MAX_MESSAGE_LENGTH=500
-      - RATE_LIMIT_MESSAGES=10
-      - RATE_LIMIT_WINDOW=60
-=======
+      - FLASK_APP=app.py
       - FLASK_ENV=development
       - FLASK_DEBUG=1
-      - SECRET_KEY=${SECRET_KEY:-dev-secret-key}
-      - MODEL_NAME=llama2
-      - MAX_MESSAGE_LENGTH=500
-      - RATE_LIMIT_MESSAGES=10
-      - RATE_LIMIT_WINDOW=60
     volumes:
       - ./backend:/app
->>>>>>> origin/master
     depends_on:
-      ollama:
-        condition: service_healthy
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 256M
+      - redis
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
-
-  streamlit-frontend:
-    build:
-<<<<<<< HEAD
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: streamlit-frontend
-=======
-      context: .
-      dockerfile: frontend/Dockerfile.dev
-    container_name: streamlit-frontend-dev
->>>>>>> origin/master
-    ports:
-      - "8501:8501"
-    environment:
-      - BACKEND_URL=http://chat-backend:5000
-      - STREAMLIT_SERVER_HEADLESS=true
-      - STREAMLIT_SERVER_ENABLE_CORS=false
-      - STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false
-<<<<<<< HEAD
-=======
-      - STREAMLIT_SERVER_PORT=8501
-      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
-      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
-      - STREAMLIT_SERVER_RUN_ON_SAVE=true
-    volumes:
-      - ./frontend:/app
->>>>>>> origin/master
-    depends_on:
-      chat-backend:
-        condition: service_healthy
-    restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 512M
-        reservations:
-          memory: 256M
+          cpus: '1'
+          memory: 1G
+
+  streamlit-frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.dev
+    container_name: streamlit-frontend-dev
+    ports:
+      - "8501:8501"
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - chat-backend
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
 
 volumes:
-  ollama_data:
-    driver: local
-
-networks:
-  default:
-<<<<<<< HEAD
-    name: chat-network
-=======
-    name: chat-network-dev
->>>>>>> origin/master
+  redis-data: 

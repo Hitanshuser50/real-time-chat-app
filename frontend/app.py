@@ -5,6 +5,7 @@ import threading
 import queue
 import os
 from datetime import datetime
+import requests
 
 # Page configuration
 st.set_page_config(
@@ -16,49 +17,76 @@ st.set_page_config(
 
 # Configuration
 BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:5000')
+RECONNECT_ATTEMPTS = 3
+MESSAGE_REFRESH_INTERVAL = 5  # Reduced from 2 seconds
 
-# Initialize session state
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-if 'username' not in st.session_state:
-    st.session_state.username = ""
-if 'connected' not in st.session_state:
-    st.session_state.connected = False
-if 'active_users' not in st.session_state:
-    st.session_state.active_users = []
-if 'message_queue' not in st.session_state:
-    st.session_state.message_queue = queue.Queue()
-if 'sio' not in st.session_state:
-    st.session_state.sio = None
-if 'connection_status' not in st.session_state:
-    st.session_state.connection_status = "disconnected"
+# Initialize session state with better defaults
+def init_session_state():
+    defaults = {
+        'messages': [],
+        'username': "",
+        'connected': False,
+        'active_users': [],
+        'message_queue': queue.Queue(),
+        'sio': None,
+        'connection_status': "disconnected",
+        'last_message_id': 0,
+        'connection_error': None,
+        'auto_reconnect': True,
+        'message_sending': False
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-class ChatClient:
+init_session_state()
+
+class EnhancedChatClient:
     def __init__(self):
-        self.sio = socketio.Client(reconnection=False)
+        self.sio = socketio.Client(
+            reconnection=True,
+            reconnection_attempts=RECONNECT_ATTEMPTS,
+            reconnection_delay=2,
+            reconnection_delay_max=10
+        )
         self.setup_events()
+        self.last_heartbeat = time.time()
     
     def setup_events(self):
         @self.sio.event
         def connect():
             st.session_state.connected = True
             st.session_state.connection_status = "connected"
-            st.session_state.message_queue.put(('status', 'Connected to chat server'))
+            st.session_state.connection_error = None
+            self.last_heartbeat = time.time()
+            st.session_state.message_queue.put(('status', '✅ Connected to chat server'))
         
         @self.sio.event
         def disconnect():
             st.session_state.connected = False
             st.session_state.connection_status = "disconnected"
-            st.session_state.message_queue.put(('status', 'Disconnected from chat server'))
+            st.session_state.message_queue.put(('status', '❌ Disconnected from chat server'))
         
         @self.sio.event
         def connect_error(data):
             st.session_state.connected = False
             st.session_state.connection_status = "error"
-            st.session_state.message_queue.put(('status', f'Connection error: {data}'))
+            st.session_state.connection_error = str(data)
+            st.session_state.message_queue.put(('status', f'❌ Connection error: {data}'))
+        
+        @self.sio.event
+        def reconnect():
+            st.session_state.message_queue.put(('status', '🔄 Reconnected to chat server'))
+            # Re-join chat after reconnection
+            if st.session_state.username:
+                self.join_chat(st.session_state.username)
         
         @self.sio.event
         def new_message(data):
+            # Add message ID to prevent duplicates
+            if 'id' not in data:
+                data['id'] = f"{data.get('timestamp', time.time())}_{data.get('username', 'unknown')}"
             st.session_state.message_queue.put(('message', data))
         
         @self.sio.event
@@ -68,6 +96,15 @@ class ChatClient:
         @self.sio.event
         def active_users(data):
             st.session_state.message_queue.put(('users', data))
+        
+        @self.sio.event
+        def error(data):
+            st.session_state.message_queue.put(('error', data.get('message', 'Unknown error')))
+        
+        @self.sio.event
+        def message_sent():
+            st.session_state.message_sending = False
+            st.session_state.message_queue.put(('status', '✅ Message sent'))
     
     def connect(self):
         try:
@@ -75,15 +112,28 @@ class ChatClient:
                 return True
             
             st.session_state.connection_status = "connecting"
-            self.sio.connect(BACKEND_URL, timeout=10)
+            st.session_state.connection_error = None
+            
+            # Test backend health first
+            try:
+                response = requests.get(f"{BACKEND_URL}/health", timeout=5)
+                if response.status_code != 200:
+                    raise Exception(f"Backend unhealthy: {response.status_code}")
+            except Exception as e:
+                st.session_state.connection_error = f"Backend not available: {e}"
+                return False
+            
+            self.sio.connect(BACKEND_URL)
             return True
+            
         except Exception as e:
             st.session_state.connection_status = "error"
-            st.error(f"Failed to connect: {e}")
+            st.session_state.connection_error = str(e)
             return False
     
     def disconnect(self):
         try:
+            st.session_state.auto_reconnect = False
             if self.sio.connected:
                 self.sio.disconnect()
             st.session_state.connection_status = "disconnected"
@@ -91,32 +141,57 @@ class ChatClient:
             st.warning(f"Disconnect error: {e}")
     
     def join_chat(self, username):
-        if self.sio.connected:
+        if self.sio.connected and username:
             self.sio.emit('join_chat', {'username': username})
+            return True
+        return False
     
     def send_message(self, message):
-        if self.sio.connected:
-            self.sio.emit('send_message', {'message': message})
+        if self.sio.connected and message.strip():
+            st.session_state.message_sending = True
+            self.sio.emit('send_message', {'message': message.strip()})
+            return True
+        return False
     
-    def get_active_users(self):
-        if self.sio.connected:
-            self.sio.emit('get_active_users')
+    def is_healthy(self):
+        """Check connection health"""
+        if not self.sio.connected:
+            return False
+        
+        # Check if we haven't received any events recently
+        if time.time() - self.last_heartbeat > 30:
+            return False
+        
+        return True
 
 def process_message_queue():
-    """Process messages from the queue and update session state"""
+    """Enhanced message queue processing with deduplication"""
     processed = 0
-    while not st.session_state.message_queue.empty() and processed < 10:  # Limit processing
+    seen_message_ids = set()
+    
+    while not st.session_state.message_queue.empty() and processed < 20:
         try:
             msg_type, data = st.session_state.message_queue.get_nowait()
             
             if msg_type == 'message':
-                st.session_state.messages.append(data)
+                # Prevent duplicate messages
+                msg_id = data.get('id', f"{data.get('timestamp', time.time())}")
+                if msg_id not in seen_message_ids:
+                    seen_message_ids.add(msg_id)
+                    st.session_state.messages.append(data)
+                    
             elif msg_type == 'history':
                 st.session_state.messages = data
+                
             elif msg_type == 'users':
                 st.session_state.active_users = data
+                
             elif msg_type == 'status':
-                st.info(data)
+                # Show status in a temporary notification
+                st.session_state.last_status = data
+                
+            elif msg_type == 'error':
+                st.error(f"❌ {data}")
             
             processed += 1
                 
@@ -126,204 +201,329 @@ def process_message_queue():
 def format_timestamp(timestamp):
     """Format timestamp for display"""
     try:
-        return datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.strftime("%H:%M:%S")
     except:
         return datetime.now().strftime("%H:%M:%S")
 
-def get_message_style(msg_type):
-    """Get CSS style for different message types"""
-    styles = {
-        'user': 'background-color: #e1f5fe; border-left: 4px solid #2196f3;',
-        'ai': 'background-color: #f3e5f5; border-left: 4px solid #9c27b0;',
-        'system': 'background-color: #fff3e0; border-left: 4px solid #ff9800;',
-        'error': 'background-color: #ffebee; border-left: 4px solid #f44336;'
+def validate_message(message):
+    """Validate message before sending"""
+    if not message or not message.strip():
+        return False, "Message cannot be empty"
+    
+    if len(message) > 500:
+        return False, "Message too long (max 500 characters)"
+    
+    # Basic spam detection
+    if message.count('!') > 10 or message.count('?') > 10:
+        return False, "Message appears to be spam"
+    
+    return True, ""
+
+def get_connection_status_color():
+    """Get color for connection status"""
+    status = st.session_state.connection_status
+    colors = {
+        'connected': '🟢',
+        'connecting': '🟡', 
+        'disconnected': '⚪',
+        'error': '🔴'
     }
-    return styles.get(msg_type, '')
+    return colors.get(status, '⚪')
+
+# Custom CSS for better UI
+st.markdown("""
+<style>
+.message-container {
+    padding: 10px;
+    margin: 5px 0;
+    border-radius: 10px;
+    border-left: 4px solid;
+}
+.user-message {
+    background-color: #e3f2fd;
+    border-left-color: #2196f3;
+}
+.ai-message {
+    background-color: #f3e5f5;
+    border-left-color: #9c27b0;
+}
+.system-message {
+    background-color: #fff3e0;
+    border-left-color: #ff9800;
+    font-style: italic;
+}
+.error-message {
+    background-color: #ffebee;
+    border-left-color: #f44336;
+}
+.status-indicator {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 1000;
+    padding: 5px 10px;
+    border-radius: 5px;
+    background: white;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+</style>
+""", unsafe_allow_html=True)
 
 # Main UI
-st.title("💬 Real-time Chat with AI")
+st.title("💬 Real-time Chat with AI Assistant")
+
+# Status indicator
+status_color = get_connection_status_color()
+st.markdown(f"""
+<div class="status-indicator">
+{status_color} {st.session_state.connection_status.title()}
+</div>
+""", unsafe_allow_html=True)
+
 st.markdown("---")
 
-# Sidebar for user management
+# Sidebar
 with st.sidebar:
-    st.header("Chat Controls")
+    st.header("🎮 Chat Controls")
     
-    # Connection status indicator
-    if st.session_state.connection_status == "connected":
-        st.success("🟢 Connected")
-    elif st.session_state.connection_status == "connecting":
-        st.warning("🟡 Connecting...")
-    elif st.session_state.connection_status == "error":
-        st.error("🔴 Connection Error")
-    else:
-        st.info("⚪ Disconnected")
+    # Connection Management
+    st.subheader("Connection")
     
-    # Username input
     if not st.session_state.connected:
-        username_input = st.text_input("Enter your username:", key="username_input")
+        # Username input with validation
+        username_input = st.text_input(
+            "Username (3-20 characters):", 
+            value=st.session_state.username,
+            max_chars=20,
+            key="username_input"
+        )
         
-        if st.button("Join Chat", type="primary"):
-            if username_input.strip():
-                st.session_state.username = username_input.strip()
-                
-                # Clean up any existing connection
-                if st.session_state.sio is not None:
-                    try:
-                        st.session_state.sio.disconnect()
-                    except:
-                        pass
-                
-                # Create new client
-                st.session_state.sio = ChatClient()
-                
-                if st.session_state.sio.connect():
-                    st.session_state.sio.join_chat(st.session_state.username)
-                    st.rerun()
-                else:
-                    st.error("Failed to connect to chat server. Please check if the backend is running.")
-            else:
-                st.warning("Please enter a username")
-    
-    else:
-        st.success(f"Connected as: **{st.session_state.username}**")
+        # Validate username
+        username_valid = len(username_input.strip()) >= 3 if username_input else False
         
-        if st.button("Leave Chat", type="secondary"):
-            if st.session_state.sio:
-                st.session_state.sio.disconnect()
+        if st.button("🚀 Join Chat", type="primary", disabled=not username_valid):
+            st.session_state.username = username_input.strip()
             
-            # Reset all state
-            st.session_state.connected = False
-            st.session_state.connection_status = "disconnected"
-            st.session_state.username = ""
-            st.session_state.messages = []
-            st.session_state.active_users = []
-            st.session_state.sio = None
-            st.rerun()
+            # Clean up existing connection
+            if st.session_state.sio:
+                try:
+                    st.session_state.sio.disconnect()
+                except:
+                    pass
+            
+            # Create new client
+            st.session_state.sio = EnhancedChatClient()
+            
+            with st.spinner("Connecting to chat..."):
+                if st.session_state.sio.connect():
+                    if st.session_state.sio.join_chat(st.session_state.username):
+                        st.success("✅ Connected successfully!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to join chat")
+                else:
+                    st.error(f"❌ Connection failed: {st.session_state.connection_error}")
+        
+        if not username_valid and username_input:
+            st.warning("Username must be 3-20 characters long")
+            
+        # Show connection error if any
+        if st.session_state.connection_error:
+            st.error(f"Connection Error: {st.session_state.connection_error}")
     
-    st.markdown("---")
-    
-    # Backend connection test
-    if st.button("Test Backend Connection"):
-        try:
-            import requests
-            response = requests.get(f"{BACKEND_URL}/health", timeout=5)
-            if response.status_code == 200:
-                st.success("✅ Backend is reachable")
-            else:
-                st.error(f"❌ Backend returned status {response.status_code}")
-        except Exception as e:
-            st.error(f"❌ Cannot reach backend: {e}")
-    
-    st.markdown("---")
-    
-    # Active users
-    st.subheader("Active Users")
-    if st.session_state.active_users:
-        for user in st.session_state.active_users:
-            st.write(f"👤 {user}")
     else:
-        st.write("No active users")
+        st.success(f"✅ Connected as: **{st.session_state.username}**")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🚪 Leave", type="secondary"):
+                if st.session_state.sio:
+                    st.session_state.sio.disconnect()
+                
+                # Reset state
+                for key in ['connected', 'username', 'messages', 'active_users']:
+                    if key in st.session_state:
+                        if key == 'messages':
+                            st.session_state[key] = []
+                        elif key == 'active_users':
+                            st.session_state[key] = []
+                        else:
+                            st.session_state[key] = "" if key == 'username' else False
+                
+                st.session_state.connection_status = "disconnected"
+                st.session_state.sio = None
+                st.rerun()
+        
+        with col2:
+            if st.button("🔄 Reconnect"):
+                if st.session_state.sio:
+                    st.session_state.sio.connect()
+    
+    st.markdown("---")
+    
+    # Active Users
+    st.subheader("👥 Active Users")
+    if st.session_state.active_users:
+        for i, user in enumerate(st.session_state.active_users):
+            icon = "👑" if user == st.session_state.username else "👤"
+            st.write(f"{icon} {user}")
+    else:
+        st.write("No users online")
+    
+    st.markdown("---")
+    
+    # Statistics
+    st.subheader("📊 Stats")
+    st.metric("Messages", len(st.session_state.messages))
+    st.metric("Online Users", len(st.session_state.active_users))
     
     st.markdown("---")
     
     # Instructions
-    st.subheader("How to use:")
+    st.subheader("💡 How to Use")
     st.markdown("""
-    - Type your message in the chat input
-    - Use `@ai` or `@bot` to ask the AI assistant
-    - Messages are shared with all users in real-time
+    • Type messages normally for group chat
+    • Use `@ai` or `@bot` to talk to AI
+    • Press Enter or click Send
+    • AI responses may take a few seconds
     """)
 
-# Main chat area
+# Main Chat Area
 if st.session_state.connected:
-    # Process any pending messages
+    # Process pending messages
     process_message_queue()
     
-    # Chat history container
-    chat_container = st.container()
+    # Chat Messages
+    st.subheader("💬 Messages")
     
-    with chat_container:
-        st.subheader("Chat Messages")
-        
-        # Display messages
+    # Message container with scrolling
+    messages_container = st.container()
+    
+    with messages_container:
         if st.session_state.messages:
-            for msg in st.session_state.messages[-50:]:  # Show last 50 messages
-                msg_time = format_timestamp(msg.get('timestamp', time.time()))
+            # Show recent messages (last 50)
+            recent_messages = st.session_state.messages[-50:]
+            
+            for msg in recent_messages:
+                timestamp = format_timestamp(msg.get('timestamp', time.time()))
                 msg_type = msg.get('type', 'user')
+                username = msg.get('username', 'Unknown')
+                message = msg.get('message', '')
                 
-                with st.container():
-                    style = get_message_style(msg_type)
-                    
-                    if msg_type == 'system':
-                        st.markdown(f"""
-                        <div style="padding: 10px; margin: 5px 0; border-radius: 5px; {style}">
-                            <small><strong>{msg_time}</strong></small><br>
-                            <em>{msg.get('message', '')}</em>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        icon = "🤖" if msg_type == 'ai' else "👤"
-                        username = msg.get('username', 'Unknown')
-                        message = msg.get('message', '')
-                        st.markdown(f"""
-                        <div style="padding: 10px; margin: 5px 0; border-radius: 5px; {style}">
-                            <small><strong>{icon} {username} - {msg_time}</strong></small><br>
-                            {message}
-                        </div>
-                        """, unsafe_allow_html=True)
+                # Message styling based on type
+                if msg_type == 'system':
+                    st.markdown(f"""
+                    <div class="message-container system-message">
+                        <small><strong>{timestamp}</strong></small><br>
+                        <em>{message}</em>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                elif msg_type == 'ai':
+                    st.markdown(f"""
+                    <div class="message-container ai-message">
+                        <small><strong>🤖 {username} • {timestamp}</strong></small><br>
+                        {message}
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                elif msg_type == 'error':
+                    st.markdown(f"""
+                    <div class="message-container error-message">
+                        <small><strong>❌ Error • {timestamp}</strong></small><br>
+                        {message}
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                else:  # user message
+                    icon = "👑" if username == st.session_state.username else "👤"
+                    st.markdown(f"""
+                    <div class="message-container user-message">
+                        <small><strong>{icon} {username} • {timestamp}</strong></small><br>
+                        {message}
+                    </div>
+                    """, unsafe_allow_html=True)
         else:
-            st.info("No messages yet. Start chatting!")
+            st.info("💬 No messages yet. Start the conversation!")
     
-    # Message input
     st.markdown("---")
     
-    # Use form to handle enter key properly
+    # Message Input - Enhanced
+    st.subheader("✍️ Send Message")
+    
+    # Message input form
     with st.form("message_form", clear_on_submit=True):
-        col1, col2 = st.columns([4, 1])
+        message_input = st.text_area(
+            "Your message:",
+            placeholder="Type your message here... Use @ai to ask the AI assistant",
+            max_chars=500,
+            height=100,
+            key="message_text"
+        )
+        
+        col1, col2, col3 = st.columns([2, 1, 1])
         
         with col1:
-            message_input = st.text_input(
-                "Type your message:", 
-                placeholder="Enter your message here... (use @ai to ask the AI assistant)",
-                key="msg_input"
-            )
+            send_clicked = st.form_submit_button("📤 Send Message", type="primary")
         
         with col2:
-            send_button = st.form_submit_button("Send", type="primary")
+            chars_left = 500 - len(message_input) if message_input else 500
+            st.caption(f"Characters left: {chars_left}")
         
-        # Send message
-        if send_button and message_input.strip():
-            st.session_state.sio.send_message(message_input.strip())
-            st.rerun()
+        with col3:
+            if st.session_state.message_sending:
+                st.caption("Sending...")
+        
+        # Handle message sending
+        if send_clicked and message_input:
+            is_valid, error_msg = validate_message(message_input)
+            
+            if is_valid:
+                if st.session_state.sio and st.session_state.sio.send_message(message_input):
+                    st.success("✅ Message sent!")
+                else:
+                    st.error("❌ Failed to send message")
+            else:
+                st.error(f"❌ {error_msg}")
     
-    # Auto-refresh for real-time updates (reduced frequency)
-    if st.session_state.connected:
-        time.sleep(2)  # Reduced from 0.5 to 2 seconds
-        st.rerun()
+    # Auto-refresh with reduced frequency
+    time.sleep(MESSAGE_REFRESH_INTERVAL)
+    st.rerun()
 
 else:
-    st.info("👈 Please enter a username and join the chat to start messaging!")
+    # Not connected state
+    st.info("👈 Please join the chat to start messaging!")
     
-    # Show connection status
-    col1, col2, col3 = st.columns(3)
+    # Connection diagnostics
+    st.subheader("🔧 Connection Status")
+    
+    col1, col2 = st.columns(2)
     
     with col1:
-        status_text = "Disconnected"
-        if st.session_state.connection_status == "connecting":
-            status_text = "Connecting"
-        elif st.session_state.connection_status == "error":
-            status_text = "Error"
-        st.metric("Connection Status", status_text)
+        st.metric("Status", st.session_state.connection_status.title())
+        st.metric("Backend URL", BACKEND_URL)
     
     with col2:
-        st.metric("Active Users", len(st.session_state.active_users))
+        # Test backend connectivity
+        if st.button("🩺 Test Backend"):
+            try:
+                with st.spinner("Testing connection..."):
+                    response = requests.get(f"{BACKEND_URL}/health", timeout=5)
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.success("✅ Backend is healthy!")
+                        st.json(data)
+                    else:
+                        st.error(f"❌ Backend returned {response.status_code}")
+            except Exception as e:
+                st.error(f"❌ Cannot reach backend: {e}")
     
-    with col3:
-        st.metric("Messages", len(st.session_state.messages))
+    # Show error details if available
+    if st.session_state.connection_error:
+        st.error(f"Last Error: {st.session_state.connection_error}")
     
-    # Show backend URL for debugging
-    st.info(f"Backend URL: {BACKEND_URL}")
-    
-    # Only auto-refresh when not connected (less frequently)
-    time.sleep(5)
+    # Slower refresh when disconnected
+    time.sleep(10)
     st.rerun()

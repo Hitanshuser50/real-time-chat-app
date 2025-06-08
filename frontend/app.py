@@ -18,7 +18,11 @@ st.set_page_config(
 # Configuration
 BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:5000')
 RECONNECT_ATTEMPTS = 3
-MESSAGE_REFRESH_INTERVAL = 5  # Reduced from 2 seconds
+MESSAGE_REFRESH_INTERVAL = 5
+
+# Global queue to handle cross-thread communication
+if 'global_message_queue' not in st.session_state:
+    st.session_state.global_message_queue = queue.Queue()
 
 # Initialize session state with better defaults
 def init_session_state():
@@ -27,7 +31,6 @@ def init_session_state():
         'username': "",
         'connected': False,
         'active_users': [],
-        'message_queue': queue.Queue(),
         'sio': None,
         'connection_status': "disconnected",
         'last_message_id': 0,
@@ -43,76 +46,85 @@ def init_session_state():
 init_session_state()
 
 class EnhancedChatClient:
-    def __init__(self):
+    def __init__(self, message_queue):
         self.sio = socketio.Client(
             reconnection=True,
             reconnection_attempts=RECONNECT_ATTEMPTS,
             reconnection_delay=2,
             reconnection_delay_max=10
         )
+        self.message_queue = message_queue  # Pass queue as parameter
         self.setup_events()
         self.last_heartbeat = time.time()
     
     def setup_events(self):
         @self.sio.event
         def connect():
-            st.session_state.connected = True
-            st.session_state.connection_status = "connected"
-            st.session_state.connection_error = None
             self.last_heartbeat = time.time()
-            st.session_state.message_queue.put(('status', '✅ Connected to chat server'))
+            self.message_queue.put(('connection_status', {
+                'connected': True,
+                'status': 'connected',
+                'error': None,
+                'message': '✅ Connected to chat server'
+            }))
         
         @self.sio.event
         def disconnect():
-            st.session_state.connected = False
-            st.session_state.connection_status = "disconnected"
-            st.session_state.message_queue.put(('status', '❌ Disconnected from chat server'))
+            self.message_queue.put(('connection_status', {
+                'connected': False,
+                'status': 'disconnected',
+                'error': None,
+                'message': '❌ Disconnected from chat server'
+            }))
         
         @self.sio.event
         def connect_error(data):
-            st.session_state.connected = False
-            st.session_state.connection_status = "error"
-            st.session_state.connection_error = str(data)
-            st.session_state.message_queue.put(('status', f'❌ Connection error: {data}'))
+            self.message_queue.put(('connection_status', {
+                'connected': False,
+                'status': 'error',
+                'error': str(data),
+                'message': f'❌ Connection error: {data}'
+            }))
         
         @self.sio.event
         def reconnect():
-            st.session_state.message_queue.put(('status', '🔄 Reconnected to chat server'))
-            # Re-join chat after reconnection
-            if st.session_state.username:
-                self.join_chat(st.session_state.username)
+            self.message_queue.put(('status', '🔄 Reconnected to chat server'))
+            # Re-join chat after reconnection would need to be handled in main thread
         
         @self.sio.event
         def new_message(data):
             # Add message ID to prevent duplicates
             if 'id' not in data:
                 data['id'] = f"{data.get('timestamp', time.time())}_{data.get('username', 'unknown')}"
-            st.session_state.message_queue.put(('message', data))
+            self.message_queue.put(('message', data))
         
         @self.sio.event
         def chat_history(data):
-            st.session_state.message_queue.put(('history', data))
+            self.message_queue.put(('history', data))
         
         @self.sio.event
         def active_users(data):
-            st.session_state.message_queue.put(('users', data))
+            self.message_queue.put(('users', data))
         
         @self.sio.event
         def error(data):
-            st.session_state.message_queue.put(('error', data.get('message', 'Unknown error')))
+            self.message_queue.put(('error', data.get('message', 'Unknown error')))
         
         @self.sio.event
         def message_sent():
-            st.session_state.message_sending = False
-            st.session_state.message_queue.put(('status', '✅ Message sent'))
+            self.message_queue.put(('message_sent', True))
     
     def connect(self):
         try:
             if self.sio.connected:
                 return True
             
-            st.session_state.connection_status = "connecting"
-            st.session_state.connection_error = None
+            self.message_queue.put(('connection_status', {
+                'connected': False,
+                'status': 'connecting',
+                'error': None,
+                'message': 'Connecting...'
+            }))
             
             # Test backend health first
             try:
@@ -120,25 +132,32 @@ class EnhancedChatClient:
                 if response.status_code != 200:
                     raise Exception(f"Backend unhealthy: {response.status_code}")
             except Exception as e:
-                st.session_state.connection_error = f"Backend not available: {e}"
+                self.message_queue.put(('connection_status', {
+                    'connected': False,
+                    'status': 'error',
+                    'error': f"Backend not available: {e}",
+                    'message': f"Backend not available: {e}"
+                }))
                 return False
             
             self.sio.connect(BACKEND_URL)
             return True
             
         except Exception as e:
-            st.session_state.connection_status = "error"
-            st.session_state.connection_error = str(e)
+            self.message_queue.put(('connection_status', {
+                'connected': False,
+                'status': 'error',
+                'error': str(e),
+                'message': f"Connection failed: {e}"
+            }))
             return False
     
     def disconnect(self):
         try:
-            st.session_state.auto_reconnect = False
             if self.sio.connected:
                 self.sio.disconnect()
-            st.session_state.connection_status = "disconnected"
         except Exception as e:
-            st.warning(f"Disconnect error: {e}")
+            print(f"Disconnect error: {e}")
     
     def join_chat(self, username):
         if self.sio.connected and username:
@@ -148,7 +167,6 @@ class EnhancedChatClient:
     
     def send_message(self, message):
         if self.sio.connected and message.strip():
-            st.session_state.message_sending = True
             self.sio.emit('send_message', {'message': message.strip()})
             return True
         return False
@@ -163,17 +181,26 @@ class EnhancedChatClient:
             return False
         
         return True
+    
+
 
 def process_message_queue():
     """Enhanced message queue processing with deduplication"""
     processed = 0
     seen_message_ids = set()
     
-    while not st.session_state.message_queue.empty() and processed < 20:
+    while not st.session_state.global_message_queue.empty() and processed < 20:
         try:
-            msg_type, data = st.session_state.message_queue.get_nowait()
+            msg_type, data = st.session_state.global_message_queue.get_nowait()
             
-            if msg_type == 'message':
+            if msg_type == 'connection_status':
+                # Update connection state
+                st.session_state.connected = data['connected']
+                st.session_state.connection_status = data['status']
+                st.session_state.connection_error = data['error']
+                st.session_state.last_status = data['message']
+                
+            elif msg_type == 'message':
                 # Prevent duplicate messages
                 msg_id = data.get('id', f"{data.get('timestamp', time.time())}")
                 if msg_id not in seen_message_ids:
@@ -191,7 +218,11 @@ def process_message_queue():
                 st.session_state.last_status = data
                 
             elif msg_type == 'error':
-                st.error(f"❌ {data}")
+                st.session_state.last_error = data
+                
+            elif msg_type == 'message_sent':
+                st.session_state.message_sending = False
+                st.session_state.last_status = '✅ Message sent'
             
             processed += 1
                 
@@ -270,6 +301,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Process messages from background threads
+process_message_queue()
+
 # Main UI
 st.title("💬 Real-time Chat with AI Assistant")
 
@@ -280,6 +314,18 @@ st.markdown(f"""
 {status_color} {st.session_state.connection_status.title()}
 </div>
 """, unsafe_allow_html=True)
+
+# Show last status message if available
+if hasattr(st.session_state, 'last_status'):
+    st.info(st.session_state.last_status)
+    # Clear after showing
+    delattr(st.session_state, 'last_status')
+
+# Show last error if available
+if hasattr(st.session_state, 'last_error'):
+    st.error(f"❌ {st.session_state.last_error}")
+    # Clear after showing
+    delattr(st.session_state, 'last_error')
 
 st.markdown("---")
 
@@ -312,19 +358,22 @@ with st.sidebar:
                 except:
                     pass
             
-            # Create new client
-            st.session_state.sio = EnhancedChatClient()
+            # Create new client with the global queue
+            st.session_state.sio = EnhancedChatClient(st.session_state.global_message_queue)
             
             with st.spinner("Connecting to chat..."):
                 if st.session_state.sio.connect():
-                    if st.session_state.sio.join_chat(st.session_state.username):
-                        st.success("✅ Connected successfully!")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("❌ Failed to join chat")
+                    # Wait a moment for connection to establish
+                    time.sleep(1)
+                    if st.session_state.connected:  # Check if connection was successful
+                        if st.session_state.sio.join_chat(st.session_state.username):
+                            st.success("✅ Connected successfully!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to join chat")
                 else:
-                    st.error(f"❌ Connection failed: {st.session_state.connection_error}")
+                    st.error(f"❌ Connection failed")
         
         if not username_valid and username_input:
             st.warning("Username must be 3-20 characters long")
@@ -392,9 +441,6 @@ with st.sidebar:
 
 # Main Chat Area
 if st.session_state.connected:
-    # Process pending messages
-    process_message_queue()
-    
     # Chat Messages
     st.subheader("💬 Messages")
     
@@ -482,6 +528,7 @@ if st.session_state.connected:
             
             if is_valid:
                 if st.session_state.sio and st.session_state.sio.send_message(message_input):
+                    st.session_state.message_sending = True
                     st.success("✅ Message sent!")
                 else:
                     st.error("❌ Failed to send message")

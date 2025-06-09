@@ -1,0 +1,5 @@
+streamlit-chat
+streamlit
+python-socketio[client]
+extra-streamlit-components
+requests

@@ -1,0 +1,38 @@
+# Development Dockerfile for Frontend
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create streamlit config directory
+RUN mkdir -p ~/.streamlit
+
+# Create streamlit config for development
+RUN echo "\
+[server]\n\
+runOnSave = true\n\
+port = 8501\n\
+address = '0.0.0.0'\n\
+headless = true\n\
+\n\
+[browser]\n\
+gatherUsageStats = false\n\
+\n\
+[theme]\n\
+primaryColor = '#2196f3'\n\
+backgroundColor = '#ffffff'\n\
+secondaryBackgroundColor = '#f0f2f6'\n\
+textColor = '#262730'\n\
+" > ~/.streamlit/config.toml
+
+# Expose port
+EXPOSE 8501
+
+# Run with auto-reloading in development
+CMD ["streamlit", "run", "app.py", "--server.fileWatcherType", "poll"]
